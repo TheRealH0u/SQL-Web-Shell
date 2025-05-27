@@ -1,13 +1,14 @@
 <?php
-session_start();
-
-// Set your master password here:
 $MASTER_PASSWORD = 'yourStrongMasterPasswordHere';
+$COOKIE_NAME = 'sql_auth';
+$COOKIE_TTL = time() + (86400 * 30); // 30 days
 
 // Handle login form submission
 if (isset($_POST['master_password'])) {
     if ($_POST['master_password'] === $MASTER_PASSWORD) {
-        $_SESSION['authenticated'] = true;
+        setcookie($COOKIE_NAME, hash('sha256', $MASTER_PASSWORD), $COOKIE_TTL, '/', '', false, true);
+        header('Location: ' . strtok($_SERVER['REQUEST_URI'], '?'));
+        exit;
     } else {
         $login_error = 'Invalid password.';
     }
@@ -15,14 +16,28 @@ if (isset($_POST['master_password'])) {
 
 // Handle logout
 if (isset($_GET['logout'])) {
-    session_destroy();
+    setcookie($COOKIE_NAME, '', time() - 3600, '/', '', false, true); // Expire the cookie
+    setcookie("sql_auth_data", '', time() - 3600, '/', '', false, true);
     header('Location: ' . strtok($_SERVER['REQUEST_URI'], '?'));
     exit;
 }
 
-// Check authentication; if not authenticated, show login form and exit
-if (empty($_SESSION['authenticated'])) {
-    // Display login form and stop
+if (isset($_GET['disconnect'])){
+    setcookie("sql_auth_data", '', time() - 3600, '/', '', false, true);
+    header('Location: ' . strtok($_SERVER['REQUEST_URI'], '?'));
+    exit;
+}
+
+// Authentication check
+$authenticated = false;
+if (isset($_COOKIE[$COOKIE_NAME])) {
+    if ($_COOKIE[$COOKIE_NAME] === hash('sha256', $MASTER_PASSWORD)) {
+        $authenticated = true;
+    }
+}
+
+// Show login form if not authenticated
+if (!$authenticated) {
     ?>
     <!DOCTYPE html>
     <html>
@@ -71,7 +86,7 @@ if (empty($_SESSION['authenticated'])) {
                 color: #000;
             }
             .error {
-                color: orange;
+                color: red;
                 margin-bottom: 10px;
                 text-align: center;
             }
@@ -89,9 +104,13 @@ if (empty($_SESSION['authenticated'])) {
     </body>
     </html>
     <?php
-    exit;  // Stop here if not authenticated
+    exit;
 }
 
+/*
+Functions
+START
+*/
 function connect_db($ip, $port, $user, $pass, $db = null)
 {
     mysqli_report(MYSQLI_REPORT_ERROR | MYSQLI_REPORT_STRICT);
@@ -139,14 +158,13 @@ function render_query_result($conn, $query)
         $result = $conn->query($query);
 
         if ($result === TRUE) {
-            return 'Query OK';
+            return '<p style="color:#0f0;">Query OK</p>';
         }
 
         if ($result === FALSE) {
-            return 'Error: ' . $conn->error;
+            return '<p style="color:red;">Error: ' . htmlspecialchars($conn->error) . '</p>';
         }
 
-        // Interactive UI for SELECT results
         $out = "<script>
             function toggleColumn(colIndex) {
                 const cells = document.querySelectorAll('.col-' + colIndex);
@@ -164,7 +182,6 @@ function render_query_result($conn, $query)
             }
         </script>";
 
-        $out .= '<button type="button" class="btn" onclick="showAllColumns()" style="margin-bottom:10px;">Show All Columns</button>';
         $out .= '<table><tr>';
         $i = 0;
         while ($field = $result->fetch_field()) {
@@ -173,39 +190,65 @@ function render_query_result($conn, $query)
         }
         $out .= '</tr>';
 
+        $lines = 0;
         while ($row = $result->fetch_assoc()) {
             $out .= '<tr>';
             foreach (array_values($row) as $j => $cell) {
                 $out .= "<td class='col-{$j}'>" . htmlspecialchars((string)$cell) . '</td>';
             }
             $out .= '</tr>';
+            $lines++;
         }
 
         $out .= '</table>';
-        return $out;
+        return [$out, $lines];
     } catch (Exception $e) {
-        return 'Error: ' . $e->getMessage();
+        return ['<p style="color:red;">Error: ' . htmlspecialchars($e->getMessage()) . '</p>', 0];
     }
+}
+/*
+Functions
+STOP
+*/
+
+$sql_auth_data = null;
+if (isset($_COOKIE['sql_auth_data'])) {
+    $sql_auth_data = json_decode($_COOKIE['sql_auth_data'], true);
 }
 
 // STATE
-$ip = $_POST['ip'] ?? '127.0.0.1';
-$port = intval($_POST['port'] ?? 3306);
-$user = $_POST['user'] ?? '';
-$pass = $_POST['pass'] ?? '';
+$ip = $_POST['ip'] 
+    ?? ($sql_auth_data['ip'] ?? '127.0.0.1');
+
+$port = isset($_POST['port']) 
+    ? intval($_POST['port']) 
+    : (isset($sql_auth_data['port']) ? intval($sql_auth_data['port']) : 3306);
+
+$user = $_POST['user'] 
+    ?? ($sql_auth_data['user'] ?? '');
+
+$pass = $_POST['pass'] 
+    ?? ($sql_auth_data['pass'] ?? '');
+
 $selected_db = $_POST['selected_db'] ?? '';
 $selected_table = $_POST['selected_table'] ?? '';
 $row_limit = $_POST['row_limit'] ?? '100';
 $query = $_POST['query'] ?? '';
 $action = $_POST['action'] ?? '';
-$connection_error = '';
-$databases = $tables = [];
-$result_html = '';
+
 
 $conn_result = connect_db($ip, $port, $user, $pass, $selected_db ?: null);
 $conn = $conn_result['conn'] ?? null;
 
 if ($conn) {
+    $cookie_value = json_encode([
+        'ip' => $ip,
+        'port' => $port,
+        'user' => $user,
+        'pass' => $pass
+    ]);
+    setcookie('sql_auth_data', $cookie_value, $COOKIE_TTL, '/', '', false, true);
+
     $databases = get_databases($conn);
 
     if ($selected_db) {
@@ -214,28 +257,36 @@ if ($conn) {
 
     if ($selected_table && $action !== 'run_query') {
         if (!$selected_db) {
-            $result_html = '<p style="color:orange;">Please select a database first.</p>';
+            $result_html = '<p style="color:red;">Please select a database and table first.</p>';
         } else {
             $conn->select_db($selected_db);
             $query = "SELECT * FROM `$selected_table` LIMIT $row_limit";
-            $result_html = render_query_result($conn, $query);
+            list($result_html, $result_row_count) = render_query_result($conn, $query);
         }
     }
 
     if ($action === 'run_query' && $query) {
         if (!$selected_db) {
-            $result_html = '<p style="color:orange;">Please select a database first.</p>';
+            $result_html = '<p style="color:red;">Please select a database and table first.</p>';
         } else {
             $conn->select_db($selected_db);
-            $result_html = render_query_result($conn, $query);
+            list($result_html, $result_row_count) = render_query_result($conn, $query);
         }
-        
+    }
+
+    if (!isset($result_html)){
+        $result_html = '<p style="color:red;">Please select a database and table first.</p>';
     }
 
     $conn->close();
+    $connection_error = '';
 } elseif (isset($conn_result['error'])) {
     $connection_error = 'Connection failed: ' . $conn_result['error'];
 }
+
+// Now: Show SQL connection form if user not connected yet or if connection error
+$connected = $conn && !$connection_error;
+
 ?>
 
 <!DOCTYPE html>
@@ -262,7 +313,7 @@ if ($conn) {
             border: 1px solid #333;
             border-radius: 10px;
         }
-        input, select, textarea, button {
+        input, select, textarea, button, a {
             width: 100%;
             margin-bottom: 10px;
             background: #222;
@@ -271,14 +322,23 @@ if ($conn) {
             padding: 8px;
             box-sizing: border-box;
         }
-        button.btn {
+        .btn {
             background: #333;
             color: #0f0;
             cursor: pointer;
         }
-        button.btn:hover {
+        .btn:hover {
             background: #0f0;
             color: #000;
+        }
+        .btn-red{
+            background: #333;
+            color: #f00 !important;
+            cursor: pointer;
+        }
+        .btn-red:hover{
+            background: #f00 !important;
+            color: #000 !important;
         }
         table {
             width: 100%;
@@ -314,128 +374,175 @@ if ($conn) {
             pointer-events: none;
             user-select: none;
         }
+        #result-content {
+            overflow: auto;
+            transform: rotateX(180deg);
+        }
+        #result-child-content {
+            transform: rotateX(-180deg);
+        }
     </style>
 </head>
 <body>
-<div id="loading-overlay">Loading data...</div>
-<form method="POST" onsubmit="document.body.classList.add('loading'); document.getElementById('loading-overlay').style.display = 'flex';">
-    <div class="grid">
-        <!-- Top Left -->
+
+<div id="loading-overlay" style="display:none;">Loading data...</div>
+
+<?php if (!$connected): ?>
+    <!-- Show SQL connection form if not connected -->
+    <form method="POST" onsubmit="document.body.classList.add('loading'); document.getElementById('loading-overlay').style.display = 'flex';" style="max-width: 400px; margin: 40px auto;">
         <div class="card">
-            <h3>Connection</h3>
+            <h3>SQL Connection</h3>
             <?php if ($connection_error): ?>
-                <div class="error"><?= htmlspecialchars($connection_error) ?></div>
+                <p style="color: red;"><?= htmlspecialchars($connection_error) ?></p>
             <?php endif; ?>
             <label>IP: <input type="text" name="ip" value="<?= htmlspecialchars($ip) ?>"></label>
             <label>Port: <input type="text" name="port" value="<?= htmlspecialchars($port) ?>"></label>
             <label>Username: <input type="text" name="user" value="<?= htmlspecialchars($user) ?>"></label>
             <label>Password: <input type="password" name="pass" value="<?= htmlspecialchars($pass) ?>"></label>
-            <button class="btn" name="action" value="connect">Connect</button>
+            <button type="submit" class="btn">Connect</button>
         </div>
-
-        <!-- Top Right -->
-        <div class="card">
-            <h3>Explorer</h3>
-            <?php if (!empty($databases)): ?>
-                <label>Database:
-                <span style="display: inline-flex; align-items: center;">
-                    <select id="db-select" name="selected_db" onchange="submitFormWithLoading(this)" style="height: 35px; font-size: 14px;">
-                    <option value="">Select DB</option>
-                    <?php foreach ($databases as $db): ?>
-                        <option value="<?= htmlspecialchars($db) ?>" <?= $selected_db === $db ? 'selected' : '' ?>>
-                        <?= htmlspecialchars($db) ?>
-                        </option>
-                    <?php endforeach; ?>
-                    </select>
-                    <div style="display: flex; flex-direction: column; margin-left: 4px;">
-                    <button type="button" onclick="moveSelectUp('db-select')" style="padding: 0 6px; font-size: 12px; line-height: 1; margin-bottom: 2px;">▲</button>
-                    <button type="button" onclick="moveSelectDown('db-select')" style="padding: 0 6px; font-size: 12px; line-height: 1;">▼</button>
-                    </div>
-                </span>
-                </label>
-            <?php endif; ?>
-
-            <?php if (!empty($tables)): ?>
-                <label>Table:
-                <span style="display: inline-flex; align-items: center;">
-                    <select id="table-select" name="selected_table" onchange="submitFormWithLoading(this)" style="height: 35px; font-size: 14px;">
-                    <option value="">Select Table</option>
-                    <?php foreach ($tables as $tbl): ?>
-                        <option value="<?= htmlspecialchars($tbl) ?>" <?= $selected_table === $tbl ? 'selected' : '' ?>>
-                        <?= htmlspecialchars($tbl) ?>
-                        </option>
-                    <?php endforeach; ?>
-                    </select>
-                    <div style="display: flex; flex-direction: column; margin-left: 4px;">
-                    <button type="button" onclick="moveSelectUp('table-select')" style="padding: 0 6px; font-size: 12px; line-height: 1; margin-bottom: 2px;">▲</button>
-                    <button type="button" onclick="moveSelectDown('table-select')" style="padding: 0 6px; font-size: 12px; line-height: 1;">▼</button>
-                    </div>
-                </span>
-                </label>
-                <label style="display:inline-block; margin-left: 10px;">
-                    Limit rows: 
-                    <input type="number" name="row_limit" min="1" max="10000000000000000000" value="<?= htmlspecialchars($row_limit ?? 100) ?>" style="width: 80px; background: #222; color: #0f0; border: 1px solid #444; padding: 5px;">
-                </label>
-            <?php endif; ?>
-
-            <h4>SQL Query</h4>
-            <?php if (!$selected_db): ?>
-                <p style="color:#888;">Select a database to run queries.</p>
-                <textarea name="query" rows="4" disabled style="opacity: 0.5;"></textarea>
-                <button class="btn" name="action" value="run_query" disabled>Run Query</button>
-            <?php else: ?>
-                <p style="color:#0f0;">Send queries to <strong><?= htmlspecialchars($selected_db) ?></strong></p>
-                <textarea name="query" rows="4"><?= htmlspecialchars($query) ?></textarea>
-                <button class="btn" name="action" value="run_query">Run Query</button>
-            <?php endif; ?>
-
-        </div>
-
-        <!-- Just results -->
-        <div class="card bottom">
-            <h3>Result</h3>
-            <div><?= $result_html ?></div>
-        </div>
+    </form>
+<?php else: ?>
+    <!-- Main interface -->
+    <div style="text-align:left; padding: 10px 20px;">
+        Connected to <?= htmlspecialchars($user) ?>@<?= htmlspecialchars($ip) ?> <a class="btn-red" style="color:red" href="?logout=1">Logout</a> <a class="btn" href="?disconnect=1">Disconnect</a>
     </div>
-</form>
 
-<script>
-    window.addEventListener('load', () => {
-    const overlay = document.getElementById('loading-overlay');
-    if (overlay) {
-        overlay.style.display = 'none';
-        document.body.classList.remove('loading');
-    }
-    });
+    <form method="POST" id="mainForm">
+        <input type="hidden" name="ip" value="<?= htmlspecialchars($ip) ?>">
+        <input type="hidden" name="port" value="<?= htmlspecialchars($port) ?>">
+        <input type="hidden" name="user" value="<?= htmlspecialchars($user) ?>">
+        <input type="hidden" name="pass" value="<?= htmlspecialchars($pass) ?>">
+        <input type="hidden" name="selected_db" id="selected_db_input" value="<?= htmlspecialchars($selected_db) ?>">
+        <input type="hidden" name="selected_table" id="selected_table_input" value="<?= htmlspecialchars($selected_table) ?>">
+        <input type="hidden" name="row_limit" id="row_limit_input" value="<?= htmlspecialchars($row_limit) ?>">
+        <input type="hidden" name="action" id="action_input" value="">
+        <input type="hidden" name="query" id="query_input" value="<?= htmlspecialchars($query) ?>">
 
-    // Optional: On page start, add loading class to block interaction immediately
-    document.body.classList.add('loading');
+        <div class="grid">
+            <!-- Top Left -->
+            <div id="explorer" class="card">
+                <h3>Explorer</h3>
+                <?php if (!empty($databases)): ?>
+                    <label>Database:
+                    <span style="display: inline-flex; align-items: center;">
+                        <select id="db-select" name="selected_db" onchange="submitFormWithLoading(this)" style="height: 35px; font-size: 14px;">
+                        <option value="">Select DB</option>
+                        <?php foreach ($databases as $db): ?>
+                            <option value="<?= htmlspecialchars($db) ?>" <?= $selected_db === $db ? 'selected' : '' ?>>
+                            <?= htmlspecialchars($db) ?>
+                            </option>
+                        <?php endforeach; ?>
+                        </select>
+                        <div style="display: flex; flex-direction: column; margin-left: 4px;">
+                        <button type="button" onclick="moveSelectUp('db-select')" style="padding: 0 6px; font-size: 12px; line-height: 1; margin-bottom: 2px;">▲</button>
+                        <button type="button" onclick="moveSelectDown('db-select')" style="padding: 0 6px; font-size: 12px; line-height: 1;">▼</button>
+                        </div>
+                    </span>
+                    </label>
+                <?php endif; ?>
 
-    function moveSelectUp(selectId) {
-        const select = document.getElementById(selectId);
-        if (!select) return;
-        if (select.selectedIndex > 0) {
-            select.selectedIndex -= 1;
-            select.dispatchEvent(new Event('change')); // optional: trigger onchange if you want auto-submit
-        }
-    }
+                <?php if (!empty($tables)): ?>
+                    <label>Table:
+                    <span style="display: inline-flex; align-items: center;">
+                        <select id="table-select" name="selected_table" onchange="submitFormWithLoading(this)" style="height: 35px; font-size: 14px;">
+                        <option value="">Select Table</option>
+                        <?php foreach ($tables as $tbl): ?>
+                            <option value="<?= htmlspecialchars($tbl) ?>" <?= $selected_table === $tbl ? 'selected' : '' ?>>
+                            <?= htmlspecialchars($tbl) ?>
+                            </option>
+                        <?php endforeach; ?>
+                        </select>
+                        <div style="display: flex; flex-direction: column; margin-left: 4px;">
+                        <button type="button" onclick="moveSelectUp('table-select')" style="padding: 0 6px; font-size: 12px; line-height: 1; margin-bottom: 2px;">▲</button>
+                        <button type="button" onclick="moveSelectDown('table-select')" style="padding: 0 6px; font-size: 12px; line-height: 1;">▼</button>
+                        </div>
+                    </span>
+                    </label>
+                    <label style="display:inline-block; margin-left: 10px;">
+                        Limit rows: 
+                        <input type="number" name="row_limit" min="1" max="10000000000000000000" value="<?= htmlspecialchars($row_limit ?? 100) ?>" style="width: 80px; background: #222; color: #0f0; border: 1px solid #444; padding: 5px;">
+                    </label>
+                <?php endif; ?>
+            </div>
 
-    function moveSelectDown(selectId) {
-        const select = document.getElementById(selectId);
-        if (!select) return;
-        if (select.selectedIndex < select.options.length - 1) {
-            select.selectedIndex += 1;
-            select.dispatchEvent(new Event('change')); // optional: trigger onchange if you want auto-submit
-        }
-    }
+            <!-- Top Right -->
+            <div id="query-panel" class="card">
+                <h4>SQL Query</h4>
+                <?php if (!$selected_db): ?>
+                    <p style="color:#888;">Select a database to run queries.</p>
+                    <textarea name="query" rows="4" disabled style="opacity: 0.5;"></textarea>
+                    <button class="btn" name="action" value="run_query" disabled>Run Query</button>
+                <?php else: ?>
+                    <p style="color:#0f0;">Send queries to <strong><?= htmlspecialchars($selected_db) ?></strong></p>
+                    <textarea name="query" rows="4"><?= htmlspecialchars($query) ?></textarea>
+                    <button class="btn" name="action" value="run_query">Run Query</button>
+                <?php endif; ?>
+            </div>
 
-    function submitFormWithLoading(selectElement) {
-        document.body.classList.add('loading');
+            <!-- Bottom -->
+            <div class="card bottom">
+                <h3>Result</h3>
+                <?php if(isset($result_html)){
+                    if($result_html !== '<p style="color:red;">Please select a database and table first.</p>' && strpos($result_html, '<p style="color:red;">Error:') !== 0){
+                        ?>
+                        <p>Number of rows: <?php echo "$result_row_count";?></p>
+                        <button type="button" class="btn" onclick="showAllColumns()" style="margin-bottom:10px;">Show All Columns</button>
+                        <?php
+                    }
+                } ?>
+                <div id="result-content">
+                    <div id="result-child-content"><?= $result_html ?></div>
+                </div>
+            </div>
+        </div>
+    </form>
+
+    <script>
+        window.addEventListener('load', () => {
         const overlay = document.getElementById('loading-overlay');
-        if (overlay) overlay.style.display = 'flex';
-        // submit the closest form (assuming selects are inside the form)
-        selectElement.form.submit();
-    }
-</script>
+        if (overlay) {
+            overlay.style.display = 'none';
+            document.body.classList.remove('loading');
+        }
+        });
+
+        // Optional: On page start, add loading class to block interaction immediately
+        document.body.classList.add('loading');
+
+        function moveSelectUp(selectId) {
+            const select = document.getElementById(selectId);
+            if (!select) return;
+            if (select.selectedIndex > 0) {
+                select.selectedIndex -= 1;
+                select.dispatchEvent(new Event('change')); // optional: trigger onchange if you want auto-submit
+            }
+        }
+
+        function moveSelectDown(selectId) {
+            const select = document.getElementById(selectId);
+            if (!select) return;
+            if (select.selectedIndex < select.options.length - 1) {
+                select.selectedIndex += 1;
+                select.dispatchEvent(new Event('change')); // optional: trigger onchange if you want auto-submit
+            }
+        }
+
+        function submitFormWithLoading(selectElement) {
+            if (selectElement.id === 'db-select') {
+                const tableSelect = document.getElementById('table-select');
+                if (tableSelect) {
+                    tableSelect.value = '';
+                }
+            }
+            document.body.classList.add('loading');
+            const overlay = document.getElementById('loading-overlay');
+            if (overlay) overlay.style.display = 'flex';
+            // submit the closest form (assuming selects are inside the form)
+            selectElement.form.submit();
+        }
+    </script>
+<?php endif; ?>
+
 </body>
 </html>
