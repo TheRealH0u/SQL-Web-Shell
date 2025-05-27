@@ -236,7 +236,6 @@ $row_limit = $_POST['row_limit'] ?? '100';
 $query = $_POST['query'] ?? '';
 $action = $_POST['action'] ?? '';
 
-
 $conn_result = connect_db($ip, $port, $user, $pass, $selected_db ?: null);
 $conn = $conn_result['conn'] ?? null;
 
@@ -461,7 +460,7 @@ $connected = $conn && !$connection_error;
                     </label>
                     <label style="display:inline-block; margin-left: 10px;">
                         Limit rows: 
-                        <input type="number" name="row_limit" min="1" max="10000000000000000000" value="<?= htmlspecialchars($row_limit ?? 100) ?>" style="width: 80px; background: #222; color: #0f0; border: 1px solid #444; padding: 5px;">
+                        <input type="number" name="row_limit" min="1" max="10000000000000000000" value="<?= htmlspecialchars($row_limit ?? 100)  ?>" onchange="submitFormWithLoading(this)" style="width: 80px; background: #222; color: #0f0; border: 1px solid #444; padding: 5px;">
                     </label>
                 <?php endif; ?>
             </div>

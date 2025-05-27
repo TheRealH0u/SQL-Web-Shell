@@ -12,3 +12,6 @@ Before doing anything change the master password.
 5. All of the query will be outputed in the SQL query textbox
 6. You can also write your own SQL queryes to limit or union select.
 7. Hide the columns by clicking - and to show them all again click Show All Columns
+
+## Issues
+- [x] Fix the Limit rows not updating when you change it
