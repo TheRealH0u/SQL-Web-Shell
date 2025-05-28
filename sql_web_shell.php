@@ -259,7 +259,7 @@ if ($conn) {
             $result_html = '<p style="color:red;">Please select a database and table first.</p>';
         } else {
             $conn->select_db($selected_db);
-            $query = "SELECT * FROM `$selected_table` LIMIT $row_limit";
+            $query = "SELECT * FROM $selected_table LIMIT $row_limit";
             list($result_html, $result_row_count) = render_query_result($conn, $query);
         }
     }
@@ -470,12 +470,12 @@ $connected = $conn && !$connection_error;
                 <h4>SQL Query</h4>
                 <?php if (!$selected_db): ?>
                     <p style="color:#888;">Select a database to run queries.</p>
-                    <textarea name="query" rows="4" disabled style="opacity: 0.5;"></textarea>
-                    <button class="btn" name="action" value="run_query" disabled>Run Query</button>
+                    <textarea id="query_box" name="query" rows="4" disabled style="opacity: 0.5;"></textarea>
+                    <button class="btn" name="action" value="run_query" disabled>Run Query (Shift + Enter)</button>
                 <?php else: ?>
                     <p style="color:#0f0;">Send queries to <strong><?= htmlspecialchars($selected_db) ?></strong></p>
-                    <textarea name="query" rows="4"><?= htmlspecialchars($query) ?></textarea>
-                    <button class="btn" name="action" value="run_query">Run Query</button>
+                    <textarea id="query_box" name="query" rows="4"><?= htmlspecialchars($query) ?></textarea>
+                    <button class="btn" name="action" value="run_query">Run Query (Shift + Enter)</button>
                 <?php endif; ?>
             </div>
 
@@ -540,6 +540,19 @@ $connected = $conn && !$connection_error;
             // submit the closest form (assuming selects are inside the form)
             selectElement.form.submit();
         }
+
+        /* Submit textarea with SHIFT + ENTER */
+        document.addEventListener('DOMContentLoaded', function () {
+            const textarea = document.getElementById('query_box');
+            const button = document.querySelector('button[name="action"][value="run_query"]');
+
+            textarea.addEventListener('keydown', function (event) {
+                if (event.key === 'Enter' && event.shiftKey) {
+                event.preventDefault(); // Prevent newline
+                button.click();         // Simulate button click
+                }
+            });
+        });
     </script>
 <?php endif; ?>
 
